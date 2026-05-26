@@ -7,9 +7,9 @@ name = "fairchem-core"
 description = "Machine learning models for chemistry and materials science by the FAIR Chemistry team"
 license = {text = "MIT License"}
 dynamic = ["version", "readme"]
-requires-python = ">=3.11, <3.14"
+requires-python = ">=3.10, <3.14"
 dependencies = [
-    "torch~=2.8.0",
+    "torch>=2.6.0",
     "ray[serve]>=2.53.0",
     "numpy>=2.0,<2.5",
     "scipy>=1.15.0",
@@ -19,7 +19,7 @@ dependencies = [
     "huggingface_hub>=0.27.1",
     "ase>=3.26.0",
     "ase-db-backends>=0.10.0",
-    "monty>=2026.2.18",
+    "monty>=2025.3.3",
     "clusterscope==0.0.18",
     "setuptools<81.0.0",
     "requests",
