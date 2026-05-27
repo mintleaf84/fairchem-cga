@@ -148,10 +148,18 @@ class TrainCheckpointCallback(Callback):
             self.save_callback
         ), "Must initialize set_checkpoint_call_backs from Runner!"
 
-        current_metric = state.metrics.get(self.monitor)
+        # Get metrics from unit (stored during on_eval_epoch_end)
+        metrics = getattr(unit, "last_eval_metrics", None)
+        if metrics is None:
+            logging.debug(
+                "No metrics found on unit. Skipping best model check."
+            )
+            return
+
+        current_metric = metrics.get(self.monitor)
         if current_metric is None:
             logging.debug(
-                f"Metric '{self.monitor}' not found in state.metrics. Skipping best model check."
+                f"Metric '{self.monitor}' not found in unit metrics. Skipping best model check."
             )
             return
 
