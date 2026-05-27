@@ -72,14 +72,41 @@ def get_most_recent_viable_checkpoint_path(checkpoint_dir: str | None) -> str | 
 class TrainCheckpointCallback(Callback):
     def __init__(
         self,
-        checkpoint_every_n_steps: int,
+        checkpoint_every_n_steps: int | None = None,
         max_saved_checkpoints: int = 2,
+        monitor: str | None = None,
+        mode: str = "min",
+        save_top_k: int = 1,
     ):
+        """
+        Callback to save checkpoints.
+        Can save periodically based on train steps AND/OR save the best K models based on a monitored metric.
+
+        Args:
+            checkpoint_every_n_steps: Save a checkpoint every N train steps. Set to None to disable periodic saving.
+            max_saved_checkpoints: Max number of periodic checkpoints to keep.
+            monitor: The name of the validation metric to monitor (e.g., "val/loss"). Set to None to disable best-model saving.
+            mode: "min" or "max". Whether to save the minimum or maximum value of the monitored metric.
+            save_top_k: The number of best models to save.
+        """
+        if checkpoint_every_n_steps is None and monitor is None:
+            logging.warning(
+                "TrainCheckpointCallback: Neither 'checkpoint_every_n_steps' nor 'monitor' was specified. "
+                "No checkpoints will be saved during training."
+            )
+        if monitor is not None and mode not in ("min", "max"):
+            raise ValueError("mode must be 'min' or 'max'.")
+
         self.checkpoint_every_n_steps = checkpoint_every_n_steps
         self.max_saved_checkpoints = max_saved_checkpoints
+        self.monitor = monitor
+        self.mode = mode
+        self.save_top_k = save_top_k
+        self.best_metrics: list[tuple[float, str]] = []
         self.save_callback = None
         self.load_callback = None
         self.checkpoint_dir = None
+        self._current_best_val = float("inf") if self.mode == "min" else -float("inf")
 
     def set_runner_callbacks(
         self, save_callback: callable, load_callback: callable, checkpoint_dir: str
@@ -91,12 +118,15 @@ class TrainCheckpointCallback(Callback):
     def on_train_step_start(self, state: State, unit: TTrainUnit) -> None:
         # We try to save the checkpoint on_train_step_start instead of at the on_train_step_end because both the step and epoch counts are consistently updated before it gets here
         # if we did this at on_train_step_end, the step would be correct but the epoch would have not been incremented and break the edge case on the last step of an epoch
+        if self.checkpoint_every_n_steps is None:
+            return
+
         assert (
             self.save_callback
         ), "Must initialize set_checkpoint_call_backs from Runner!"
         step = unit.train_progress.num_steps_completed
         if (
-            self.checkpoint_every_n_steps is not None
+            step > 0
             and step % self.checkpoint_every_n_steps == 0
         ):
             self.save_callback(os.path.join(self.checkpoint_dir, f"step_{step}"))
@@ -109,6 +139,65 @@ class TrainCheckpointCallback(Callback):
                 for dir, _ in checkpoint_dirs_by_time[: -self.max_saved_checkpoints]:
                     if not os.path.islink(dir):
                         shutil.rmtree(dir)
+
+    def on_eval_end(self, state: State, unit: EvalUnit) -> None:
+        if self.monitor is None:
+            return
+
+        assert (
+            self.save_callback
+        ), "Must initialize set_checkpoint_call_backs from Runner!"
+
+        current_metric = state.metrics.get(self.monitor)
+        if current_metric is None:
+            logging.debug(
+                f"Metric '{self.monitor}' not found in state.metrics. Skipping best model check."
+            )
+            return
+
+        try:
+            current_metric = float(current_metric)
+        except (ValueError, TypeError):
+            logging.warning(
+                f"Metric '{self.monitor}' has non-numeric value '{current_metric}'. Skipping best model check."
+            )
+            return
+
+        is_better = False
+        if self.mode == "min":
+            is_better = current_metric < self._current_best_val
+        else:
+            is_better = current_metric > self._current_best_val
+
+        if not is_better and len(self.best_metrics) < self.save_top_k:
+            is_better = True
+
+        if is_better:
+            self._current_best_val = current_metric
+            step = unit.train_progress.num_steps_completed
+            new_best_path = os.path.join(
+                self.checkpoint_dir, f"best_model_step_{step}_metric_{current_metric:.4f}"
+            )
+
+            logging.info(
+                f"New best model found! Metric {self.monitor}: {current_metric:.4f}. Saving to {new_best_path}"
+            )
+            self.save_callback(new_best_path)
+
+            self.best_metrics.append((current_metric, new_best_path))
+            sort_reverse = self.mode == "max"
+            self.best_metrics.sort(key=lambda x: x[0], reverse=sort_reverse)
+
+            if len(self.best_metrics) > self.save_top_k:
+                metric_to_remove, path_to_remove = self.best_metrics.pop()
+                if distutils.is_master() and os.path.exists(path_to_remove):
+                    logging.info(f"Removing old best checkpoint: {path_to_remove}")
+                    try:
+                        shutil.rmtree(path_to_remove)
+                    except OSError as e:
+                        logging.warning(f"Failed to remove old checkpoint {path_to_remove}: {e}")
+
+            self._current_best_val = self.best_metrics[0][0]
 
     def on_train_end(self, state: State, unit: TTrainUnit) -> None:
         if self.checkpoint_every_n_steps is not None:
