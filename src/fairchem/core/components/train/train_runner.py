@@ -138,7 +138,9 @@ class TrainCheckpointCallback(Callback):
                 )
                 for dir, _ in checkpoint_dirs_by_time[: -self.max_saved_checkpoints]:
                     if not os.path.islink(dir):
-                        shutil.rmtree(dir)
+                        # Skip best_model checkpoints - they are managed separately
+                        if not os.path.basename(dir).startswith("best_model_"):
+                            shutil.rmtree(dir)
 
     def on_eval_end(self, state: State, unit: EvalUnit) -> None:
         if self.monitor is None:
